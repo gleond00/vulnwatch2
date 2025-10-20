@@ -1,0 +1,22 @@
+# SERVICIO ENERCONTROL: EJECUCIÓN MANTENIDA INDEFINIDAMENTE
+# 
+# Debe ser ejecutable:	chmod +x ...	https://linuxconfig.org/how-to-automatically-execute-shell-script-at-startup-boot-on-systemd-linux
+# Habilitar:			systemctl enable /geah/system/services/geah.service
+# Iniciar manualmente:	systemctl start /geah/system/services/geah.service
+#
+# KillSignal=SIGINT para cierre ordenado (similar a KeyboardInterrupt).
+
+[Unit]
+Description=GEAH main process
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/geah-project
+ExecStart=python3 /geah-project/hl7service.py
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

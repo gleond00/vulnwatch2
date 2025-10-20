@@ -1,0 +1,62 @@
+### Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+### Entornos
+.env
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+### Tests / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.pyright/
+.dmypy.json
+.tox/
+
+### Django / Proyecto
+# BD y artefactos
+db.sqlite3
+*.sqlite3
+*.sqlite3-*
+*.db
+
+# Archivos generados / subidas
+media/
+staticfiles/
+static/
+exports/
+
+# Ignorar 'models' binarios/artefactos (no afecta core/models.py)
+# (solo si tienes una carpeta de pesos en la raíz del repo)
+models/
+
+# Migraciones (opción que pediste; mantiene __init__.py)
+*/migrations/*
+!*/migrations/__init__.py
+
+### VS Code / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+### SO
+.DS_Store
+Thumbs.db
+desktop.ini
+
+### Logs
+*.log
+
+### Node (por si hay frontend)
+node_modules/
