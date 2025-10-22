@@ -107,7 +107,8 @@ JOBS_MAX_WAIT_MS = int(os.environ.get("JOBS_MAX_WAIT_MS", "150"))
 JOBS_POST_BATCH_SLEEP_MS = int(os.environ.get("JOBS_POST_BATCH_SLEEP_MS", "5"))
 
 # --- Límite de issues por repo (0 = sin límite) ---
-MAX_ISSUES_PER_REPO = int(os.environ.get("MAX_ISSUES_PER_REPO", "100"))
+# MAX_ISSUES_PER_REPO = int(os.environ.get("MAX_ISSUES_PER_REPO", "100"))
+MAX_SEED_ISSUES = int(os.environ.get("MAX_SEED_ISSUES", "100"))
 
 # Comentarios (ya lo tenías)
 MAX_COMMENTS_PER_ISSUE = os.environ.get("MAX_COMMENTS_PER_ISSUE", None)

@@ -1,3 +1,4 @@
+# core/apps.py
 from django.apps import AppConfig
 import threading, time
 
@@ -23,7 +24,14 @@ class CoreConfig(AppConfig):
         from .jobs import start_jobs_worker
         start_jobs_worker()
 
-        # scheduler de sync (con guard para no duplicar en autoreload)
+        # worker de exportación (CSV)
+        try:
+            from .exporter import start_export_worker
+            start_export_worker()
+        except Exception as e:
+            print(f"[export] no se pudo iniciar worker: {e}", flush=True)
+
+        # scheduler de sync (idempotente)
         if getattr(self, "_started", False):
             return
         self._started = True
@@ -31,10 +39,9 @@ class CoreConfig(AppConfig):
         from django.conf import settings
         from core.services import sync_all_repos
         interval = int(getattr(settings, "SYNC_INTERVAL_MIN", 10)) * 60
-        mins = max(1, interval // 60)
 
         def loop():
-            print(f"[scheduler] hilo iniciado ✅ (cada {mins} min)", flush=True)
+            print(f"[scheduler] hilo iniciado ✅ (cada {interval//60}s)", flush=True)
             while True:
                 try:
                     sync_all_repos()
