@@ -1,0 +1,138 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}
+<style>
+  .content { color: var(--body-fg, #111); }
+  .cards { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
+  .card  { flex:1 1 260px; border:1px solid var(--hairline-color, #e5e7eb); border-radius:8px; padding:12px; background: var(--darkened-bg, #f9fafb); color: var(--body-fg, #111); }
+  .card h3 { margin:0 0 8px; font-size:16px; color: var(--body-fg, #111); }
+  .kpi { font-size:28px; font-weight:700; color: var(--body-fg, #111); }
+  .sub { color: var(--body-quiet-color, #666); font-size:12px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:16px; }
+  @media (max-width: 1200px){ .grid { grid-template-columns: 1fr; } }
+  canvas { width:100% !important; height:340px !important; background: var(--body-bg, #fff); border-radius:6px; }
+  table.simple { width:100%; border-collapse: collapse; }
+  table.simple th, table.simple td { border-bottom:1px solid var(--hairline-color, #eee); padding:6px 8px; text-align:left; color: var(--body-fg, #111); }
+  .muted { color:#777; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin: 6px 0 14px; }
+  .btn-link { border:1px solid var(--hairline-color, #e5e7eb); padding:4px 8px; border-radius:6px; text-decoration:none; }
+  .btn-link.active { background: var(--selected-bg, rgba(0,0,0,0.06)); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="content">
+  <h1>Estadísticas</h1>
+
+  <div class="cards">
+    <div class="card"><h3>Repositorios (total)</h3><div class="kpi">{{ repos_total }}</div><div>Con vulnerabilidades: <b>{{ repos_with_vuln }}</b></div></div>
+    <div class="card"><h3>Issues</h3><div class="kpi">{{ issues_total }}</div><div>Con predicción: <b>{{ issues_with_pred }}</b></div><div>Vulnerables: <b>{{ issues_vuln }}</b></div></div>
+    <div class="card"><h3>Modelos de lenguaje</h3><div class="kpi">{{ ml_total }}</div><div>Activos: <b>{{ ml_active }}</b></div></div>
+    <div class="card"><h3>Cobertura de predicciones</h3><div class="kpi">{{ cov_pct }}%</div><div class="sub">Issues con predicción vs total</div></div>
+    <div class="card"><h3>Tasa de vulnerables</h3><div class="kpi">{{ vuln_rate_pct }}%</div><div class="sub">Sobre issues con predicción</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>Top repos por issues vulnerables</h3><canvas id="chartTopRepos"></canvas></div>
+    <div class="card"><h3>Distribución de severidad</h3><canvas id="chartSeverity"></canvas></div>
+    <div class="card"><h3>Tipos de vulnerabilidades</h3><canvas id="chartTypes"></canvas><div class="muted">Etiquetas de tipos en issues marcados como vulnerables</div></div>
+    <div class="card"><h3>Cobertura</h3><canvas id="chartCoverage"></canvas><div class="muted">Predicción vs sin predicción</div></div>
+    <div class="card"><h3>Vulnerables</h3><canvas id="chartVuln"></canvas><div class="muted">Vulnerables vs no vulnerables (sólo con predicción)</div></div>
+  </div>
+
+  <h3 style="margin-top:18px;">Tabla top repos</h3>
+  <table class="simple">
+    <thead><tr><th>#</th><th>Repositorio</th><th>Issues vulnerables</th></tr></thead>
+    <tbody id="topReposTable"></tbody>
+  </table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  if (!window.Chart) { console.warn('Chart.js no disponible'); return; }
+  if (window.ChartDataLabels) { Chart.register(ChartDataLabels); }
+
+  // VARIABLES: defaults seguros
+  const topLabels = {{ top_repos_labels|default:"[]"|safe }};
+  const topCounts = {{ top_repos_counts|default:"[]"|safe }};
+  const sevLabels = {{ sev_labels|default:"[]"|safe }};
+  const sevCounts = {{ sev_counts|default:"[]"|safe }};
+  const typeLabels = {{ type_labels|default:"[]"|safe }};
+  const typeValues = {{ type_values|default:"[]"|safe }};
+  const issuesTotal = {{ issues_total|default:0 }};
+  const issuesWithPred = {{ issues_with_pred|default:0 }};
+  const issuesVuln = {{ issues_vuln|default:0 }};
+
+  const css = getComputedStyle(document.documentElement);
+  const textColor = (css.getPropertyValue('--body-fg') || '#111').trim() || '#111';
+  const gridColor = (css.getPropertyValue('--hairline-color') || 'rgba(0,0,0,0.1)').trim() || 'rgba(0,0,0,0.1)';
+
+  const commonOpts = {
+    responsive: true, layout: { padding: 6 },
+    plugins: {
+      legend: { labels: { color: textColor }, position: 'bottom' },
+      datalabels: { color: textColor, anchor: 'end', align: 'top',
+        formatter: v => (typeof v === 'number' && v !== 0 ? v : '') }
+    },
+    scales: {
+      x: { ticks: { color: textColor }, grid: { color: gridColor, drawBorder: false } },
+      y: { ticks: { color: textColor }, grid: { color: gridColor, drawBorder: false }, beginAtZero:true }
+    }
+  };
+
+  const ensureData = (labels, data) => {
+    if (!Array.isArray(labels) || labels.length === 0) return { labels: ["Sin datos"], data: [0] };
+    return { labels, data: (Array.isArray(data) && data.length ? data : new Array(labels.length).fill(0)) };
+  };
+
+  const top = ensureData(topLabels, topCounts);
+  const sev = ensureData(sevLabels, sevCounts);
+  const types = ensureData(typeLabels, typeValues);
+
+  new Chart(document.getElementById('chartTopRepos'), {
+    type: 'bar', data: { labels: top.labels, datasets: [{ label: 'Issues vulnerables', data: top.data }] },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { display: false } } }
+  });
+
+  new Chart(document.getElementById('chartSeverity'), {
+    type: 'bar', data: { labels: sev.labels, datasets: [{ label: 'Severidad', data: sev.data }] },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { display: false } } }
+  });
+
+  new Chart(document.getElementById('chartTypes'), {
+    type: 'bar', data: { labels: types.labels, datasets: [{ label: 'Tipos', data: types.data }] },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { display: false } } }
+  });
+
+  const withPred = issuesWithPred;
+  const withoutPred = Math.max(issuesTotal - issuesWithPred, 0);
+  new Chart(document.getElementById('chartCoverage'), {
+    type: 'doughnut', data: { labels: ['Con predicción', 'Sin predicción'], datasets: [{ data: [withPred, withoutPred] }] },
+    options: { ...commonOpts }
+  });
+
+  const nonVuln = Math.max(issuesWithPred - issuesVuln, 0);
+  new Chart(document.getElementById('chartVuln'), {
+    type: 'doughnut', data: { labels: ['Vulnerables', 'No vulnerables'], datasets: [{ data: [issuesVuln, nonVuln] }] },
+    options: { ...commonOpts }
+  });
+
+  // Tabla
+  const tbody = document.getElementById('topReposTable');
+  if (top.labels[0] !== 'Sin datos') {
+    for (let i = 0; i < top.labels.length; i++) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${i+1}</td><td>${top.labels[i]}</td><td>${top.data[i]}</td>`;
+      tbody.appendChild(tr);
+    }
+  } else {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="3" class="muted">No hay datos todavía</td>`;
+    tbody.appendChild(tr);
+  }
+});
+</script>
+{% endblock %}

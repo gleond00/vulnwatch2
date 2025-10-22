@@ -2,13 +2,16 @@ from __future__ import annotations
 import threading, queue, time
 from typing import Set, List
 from django import db
+from django.conf import settings
 
 _queue: "queue.Queue[int]" = queue.Queue()
 _seen: Set[int] = set()
 _started = False
 
-BATCH_SIZE = 8
-BATCH_MAX_WAIT = 0.15  # agrupa IDs unos ms para inferir en lote
+# Configurables por settings/env
+BATCH_SIZE = int(getattr(settings, "JOBS_BATCH_SIZE", 32))
+BATCH_MAX_WAIT = float(getattr(settings, "JOBS_MAX_WAIT_MS", 150)) / 1000.0  # ms -> s
+POST_BATCH_SLEEP = float(getattr(settings, "JOBS_POST_BATCH_SLEEP_MS", 5)) / 1000.0  # cede CPU
 
 def start_jobs_worker():
     global _started
@@ -17,7 +20,7 @@ def start_jobs_worker():
     _started = True
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    print("[jobs] worker iniciado ✅", flush=True)
+    print(f"[jobs] worker iniciado ✅ (batch={BATCH_SIZE}, wait={int(BATCH_MAX_WAIT*1000)}ms)", flush=True)
 
 def _drain_batch(first_id: int) -> List[int]:
     ids = [first_id]
@@ -36,7 +39,6 @@ def _run():
         try:
             db.close_old_connections()
             batch = _drain_batch(issue_id)
-            # import perezoso: evita ciclo jobs -> services a import-time
             from .services import classify_issue_batch
             classify_issue_batch(batch)
         except Exception as e:
@@ -45,6 +47,8 @@ def _run():
             for iid in set([issue_id, *batch[1:]]):
                 _seen.discard(iid)
                 _queue.task_done()
+            if POST_BATCH_SLEEP > 0:
+                time.sleep(POST_BATCH_SLEEP)
 
 def enqueue_issue(issue_id: int):
     if issue_id in _seen:

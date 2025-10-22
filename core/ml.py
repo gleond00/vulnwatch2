@@ -82,6 +82,7 @@ class VulnClassifier:
         self.model_name = getattr(settings, "MODEL_NAME", "roberta-large")
         self.device = torch.device(_resolve_device(device))
         self.max_length = max_length
+        self.infer_batch_size = int(getattr(settings, "INFER_BATCH_SIZE", 16))
 
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(self.run_dir_path.as_posix(), use_fast=True)
@@ -124,53 +125,72 @@ class VulnClassifier:
         if cls._instance is None:
             run_dir = getattr(settings, "RUN_DIR", "./models/current")
             device = getattr(settings, "DEVICE", "cpu")
-            cls._instance = VulnClassifier(run_dir, device=device)
+            max_length = int(getattr(settings, "MAX_LENGTH", 512))  # configurable
+            cls._instance = VulnClassifier(run_dir, device=device, max_length=max_length)
         return cls._instance
 
-    def _encode(self, text: str) -> Dict[str, torch.Tensor]:
-        enc = self.tokenizer(text, padding=False, truncation=True, max_length=self.max_length, return_tensors="pt")
+    def _encode_batch(self, texts: List[str]) -> Dict[str, torch.Tensor]:
+        enc = self.tokenizer(texts, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
         return {k: v.to(self.device) for k, v in enc.items()}
 
     @torch.inference_mode()
-    def predict(self, text: str) -> Dict[str, Any]:
-        enc = self._encode(text)
+    def predict_batch(self, texts: List[str]) -> List[Dict[str, Any]]:
+        if not texts:
+            return []
+        enc = self._encode_batch(texts)
         out = self.model(**enc)
 
-        logits_bin = out.get("logits_bin")
-        bin_score = None
-        bin_is_vuln = None
-        if logits_bin is not None:
-            bin_score = torch.sigmoid(logits_bin).item()
-            bin_is_vuln = bool(bin_score >= self.bin_threshold)
+        B = enc["input_ids"].shape[0]
+        has_bin = ("logits_bin" in out) and (out["logits_bin"] is not None)
 
-        types_pred: List[str] = []
-        types_probs: Dict[str, float] | None = None
-        severity_pred: int | None = None
-        severity_probs: List[float] | None = None
+        if has_bin:
+            bin_scores = torch.sigmoid(out["logits_bin"]).detach().cpu().numpy().reshape(-1)
+            bin_is = bin_scores >= float(self.bin_threshold)
+        else:
+            bin_scores = np.array([None] * B, dtype=object)
+            bin_is = np.array([True] * B, dtype=bool)  # si no hay head binaria, ejecuta resto
 
-        if (bin_is_vuln is None) or bin_is_vuln:
-            logits_types = out["logits_types"]
-            logits_sev = out["logits_sev"]
-            t_probs = torch.sigmoid(logits_types).squeeze(0).cpu().numpy()
-            s_probs = F.softmax(logits_sev, dim=-1).squeeze(0).cpu().numpy()
-            thr = self.type_thresholds if len(self.type_thresholds) == len(t_probs) else np.full_like(t_probs, 0.5)
-            mask = t_probs >= thr
-            types_pred = [self.type_labels[i] for i, m in enumerate(mask) if m]
-            if (bin_is_vuln is not None) and (not bin_is_vuln):
-                types_pred = []
-                t_probs = np.zeros_like(t_probs)
-            types_probs = {self.type_labels[i]: float(t_probs[i]) for i in range(len(self.type_labels))}
-            severity_pred = int(np.argmax(s_probs))
-            severity_probs = [float(x) for x in s_probs.tolist()]
+        t_probs_all = torch.sigmoid(out["logits_types"]).detach().cpu().numpy()  # [B, T]
+        s_probs_all = F.softmax(out["logits_sev"], dim=-1).detach().cpu().numpy()  # [B, 4]
 
-        return {
-            "bin_is_vuln": bin_is_vuln,
-            "bin_score": float(bin_score) if bin_score is not None else None,
-            "types_pred": types_pred,
-            "types_probs": types_probs,
-            "severity_pred": severity_pred,
-            "severity_probs": severity_probs,
-        }
+        thr = self.type_thresholds if len(self.type_thresholds) == t_probs_all.shape[1] else np.full((t_probs_all.shape[1],), 0.5, dtype=np.float32)
+
+        results: List[Dict[str, Any]] = []
+        for i in range(B):
+            bin_is_vuln = bool(bin_is[i]) if has_bin else None
+            bin_score = float(bin_scores[i]) if has_bin else None
+
+            types_pred: List[str] = []
+            types_probs: Dict[str, float] | None = None
+            severity_pred: int | None = None
+            severity_probs: List[float] | None = None
+
+            if (bin_is_vuln is None) or bin_is_vuln:
+                t_probs = t_probs_all[i]
+                s_probs = s_probs_all[i]
+                mask = t_probs >= thr
+                types_pred = [self.type_labels[j] for j, m in enumerate(mask) if m]
+                if (bin_is_vuln is not None) and (not bin_is_vuln):
+                    types_pred = []
+                    t_probs = np.zeros_like(t_probs)
+                types_probs = {self.type_labels[j]: float(t_probs[j]) for j in range(len(self.type_labels))}
+                severity_pred = int(np.argmax(s_probs))
+                severity_probs = [float(x) for x in s_probs.tolist()]
+
+            results.append({
+                "bin_is_vuln": bin_is_vuln,
+                "bin_score": float(bin_score) if bin_score is not None else None,
+                "types_pred": types_pred,
+                "types_probs": types_probs,
+                "severity_pred": severity_pred,
+                "severity_probs": severity_probs,
+            })
+        return results
+
+    @torch.inference_mode()
+    def predict(self, text: str) -> Dict[str, Any]:
+        return self.predict_batch([text])[0]
+        
 
 def get_classifier() -> VulnClassifier:
     return VulnClassifier.instance()

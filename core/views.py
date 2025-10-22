@@ -1,14 +1,14 @@
 # core/views.py
 from __future__ import annotations
 from typing import Any
-import threading
-from django import db
 
+from django.db.models import Case, When, Value, IntegerField
 from django.utils import timezone as djtz
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.filters import OrderingFilter
 
 from .models import Repository, Issue
 from .serializers import RepositorySerializer, IssueSerializer
@@ -37,25 +37,9 @@ class RepositoryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """
-        Guardamos el repo y lanzamos el seed en un hilo de fondo
-        para NO bloquear la petición HTTP.
+        Guardamos el repo. (El seed en background ya lo tienes en admin/views con on_commit.)
         """
-        repo = serializer.save()
-
-        if not repo.is_own:
-            def _bg(repo_id: int):
-                try:
-                    # muy importante para no heredar conexiones en hilos
-                    db.close_old_connections()
-                    from .models import Repository as _Repo
-                    from .services import seed_repository
-                    r = _Repo.objects.get(id=repo_id)
-                    n = seed_repository(r)  # trae TODOS los abiertos por tandas y encola clasificaciones
-                    print(f"[seed_repository/bg] {r.full_name}: {n} issues abiertos importados", flush=True)
-                except Exception as e:
-                    print(f"[seed_repository/bg] ERROR: {e}", flush=True)
-
-            threading.Thread(target=_bg, args=(repo.id,), daemon=True).start()
+        serializer.save()
 
     @action(detail=True, methods=["POST"])
     def sync(self, request, pk=None):
@@ -68,8 +52,30 @@ class RepositoryViewSet(viewsets.ModelViewSet):
 
 
 class IssueViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Issue.objects.select_related("repo").all().order_by("-updated_at")
+    """
+    Listado de issues con soporte de ordenación DRF.
+    - Campo virtual 'pred_vuln' = 1 si el issue es vulnerable, 0 si no.
+    - Orden por defecto: últimas actualizaciones primero.
+    - Orden disponibles: pred_vuln, updated_at_github, updated_at, number.
+    """
     serializer_class = IssueSerializer
+    filter_backends = (OrderingFilter,)
+    ordering_fields = ("pred_vuln", "updated_at_github", "updated_at", "number")
+    ordering = ("-updated_at_github",)
+
+    def get_queryset(self):
+        # Annotate: 1 si hay predicción binaria positiva, si no 0
+        qs = (Issue.objects
+              .select_related("repo")
+              .annotate(
+                  pred_vuln=Case(
+                      When(prediction__bin_is_vuln=True, then=Value(1)),
+                      default=Value(0),
+                      output_field=IntegerField(),
+                  )
+              )
+              .order_by(*self.ordering))
+        return qs
 
     @action(detail=False, methods=["GET"])
     def by_repo(self, request):
@@ -77,10 +83,12 @@ class IssueViewSet(viewsets.ReadOnlyModelViewSet):
         if not repo_id:
             return Response({"error": "repo_id required"}, status=400)
         qs = self.get_queryset().filter(repo_id=repo_id)
+
         page = self.paginate_queryset(qs)
         if page is not None:
             ser = self.get_serializer(page, many=True)
             return self.get_paginated_response(ser.data)
+
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
 
