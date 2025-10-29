@@ -60,3 +60,5 @@ desktop.ini
 
 ### Node (por si hay frontend)
 node_modules/
+
+dataset_builder/
